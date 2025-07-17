@@ -216,6 +216,36 @@ def split_by_content(img_path, out_dir='split_questions'):
 
 
 # --- OCR-based splitting & shuffling ---------------------------------------
+def get_label_position(img):
+    """
+    Detects the (x, y) position of an answer label in Hebrew (e.g., "א.") in the given image.
+    Returns coordinates of the top-left corner of the label. If not found, uses a smart fallback near the top-right.
+    """
+    from pytesseract import image_to_data, Output
+    import re
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    data = image_to_data(gray, lang='heb', output_type=Output.DICT)
+
+    h, w = img.shape[:2]
+    fallback_x = w - 60  # 60 pixels from right (RTL)
+    fallback_y = 10
+
+    for i, word in enumerate(data['text']):
+        text = word.strip()
+        # detect things like "א." or "ב." exactly
+        if re.match(r"^[אבגדהו]\.", text):
+            return data['left'][i], data['top'][i]
+
+        # handle cases where "א" and "." are separate words, like: ["א", "."]
+        if text in "אבגדהו" and i + 1 < len(data['text']):
+            next_text = data['text'][i + 1].strip()
+            if next_text == ".":
+                return data['left'][i], data['top'][i]
+
+    # fallback if no label was found
+    return fallback_x, fallback_y
+
 
 def split_question_and_answers(img_path):
     img = cv2.imread(img_path)
@@ -272,7 +302,35 @@ def split_question_and_answers(img_path):
 
 
 def merge_question_and_answers(question_img, answer_imgs, out_path):
-    parts = [question_img] + [img for _, img in answer_imgs]
+    from PIL import ImageFont, ImageDraw, Image as PILImage
+
+    labels = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י']
+    cleaned_answers = []
+
+    for i, img in enumerate(answer_imgs):
+        img_pil = PILImage.fromarray(img.copy())
+        draw = ImageDraw.Draw(img_pil)
+
+        try:
+            font = ImageFont.truetype("arial.ttf", 28)
+        except:
+            font = ImageFont.load_default()
+
+        # גלה איפה הייתה התווית המקורית
+        x, y = get_label_position(img)
+
+        # מחק את התווית הישנה (מלבן לבן קטן)
+        cv2.rectangle(img, (x - 5, y - 5), (x + 60, y + 30), (255, 255, 255), -1)
+        img_pil = PILImage.fromarray(img)
+
+        # כתוב את התווית החדשה באותו מקום
+        draw = ImageDraw.Draw(img_pil)
+        draw.text((x, y), f"{labels[i]}.", fill=(0, 0, 0), font=font)
+
+        cleaned_answers.append(np.array(img_pil))
+
+    # מיזוג לשאלה אחת
+    parts = [question_img] + cleaned_answers
     heights = [p.shape[0] for p in parts]
     max_w = max(p.shape[1] for p in parts)
     canvas = np.ones((sum(heights), max_w, 3), dtype=np.uint8) * 255
@@ -281,13 +339,11 @@ def merge_question_and_answers(question_img, answer_imgs, out_path):
         h, w = p.shape[:2]
         canvas[y:y + h, :w] = p
         y += h
+
     cv2.imwrite(out_path, canvas)
 
 
 def shuffle_answers_in_image(img_path, out_dir='mixed_questions'):
-    """
-    Split a question image, shuffle its answers with a time-based seed, and remerge.
-    """
     os.makedirs(out_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(img_path))[0]
     q_img, answers = split_question_and_answers(img_path)
@@ -295,16 +351,18 @@ def shuffle_answers_in_image(img_path, out_dir='mixed_questions'):
 
     if answers is None:
         print(f"⚠️ No answers detected; {out_path}")
-        # cv2.imwrite(out_path, cv2.imread(img_path))
         return out_path
 
-    # Seed shuffle using current timestamp for more randomness
+    # ערבוב עם seed
     seed = int(time.time_ns())
     random.seed(seed)
     print(f"🔀 Shuffling answers with seed {seed}")
-    random.shuffle(answers)
 
-    merge_question_and_answers(q_img, answers, out_path)
+    answer_imgs_only = [img for _, img in answers]  # התמונה בלבד
+    random.shuffle(answer_imgs_only)
+
+    # העבר לפונקציה את התמונות בלבד (ללא תווית ישנה)
+    merge_question_and_answers(q_img, answer_imgs_only, out_path)
     print(f"✅ Saved shuffled question: {out_path}")
     return out_path
 
@@ -341,4 +399,4 @@ if __name__ == '__main__':
     # process_page('input/Exam24BB-02.png', 'split_questions', 'mixed_questions')
     # process_page('input/Exam24BB-03.png', 'split_questions', 'mixed_questions')
     # process_page('input/Exam24BB-04.png', 'split_questions', 'mixed_questions')
-    process_page('input/testing2.png', SPLIT_DIR, MIXED_DIR)
+    process_page('input/Exam24BB-04.png', SPLIT_DIR, MIXED_DIR)
