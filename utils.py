@@ -11,6 +11,7 @@ def shuffle_array(arr):
     random.shuffle(copy)
     return copy
 
+
 def shuffle_exam(questions):
     return [
         {
@@ -19,6 +20,7 @@ def shuffle_exam(questions):
         }
         for q in questions
     ]
+
 
 def save_exam_to_pdf(questions, path):
     c = canvas.Canvas(path, pagesize=A4)

@@ -218,33 +218,48 @@ def split_by_content(img_path, out_dir='split_questions'):
 # --- OCR-based splitting & shuffling ---------------------------------------
 def get_label_position(img):
     """
-    Detects the (x, y) position of an answer label in Hebrew (e.g., "א.") in the given image.
-    Returns coordinates of the top-left corner of the label. If not found, uses a smart fallback near the top-right.
+    Detects the position of a label (e.g., 'א.', 'ב.', '1.') in an RTL answer image.
+    Returns (x, y, label_width) where:
+    - x is the x-coordinate of the label's right edge
+    - y is the vertical center
+    - label_width is used to calculate alignment
     """
-    from pytesseract import image_to_data, Output
+    import pytesseract
     import re
+    import cv2
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    data = image_to_data(gray, lang='heb', output_type=Output.DICT)
+    h, w = gray.shape[:2]
 
-    h, w = img.shape[:2]
-    fallback_x = w - 60  # 60 pixels from right (RTL)
-    fallback_y = 10
+    # Step 1: OCR on the top 60 pixels only
+    top_strip = gray[:60, :]
+    data = pytesseract.image_to_data(top_strip, lang='heb', config='--psm 6', output_type=pytesseract.Output.DICT)
 
-    for i, word in enumerate(data['text']):
-        text = word.strip()
-        # detect things like "א." or "ב." exactly
-        if re.match(r"^[אבגדהו]\.", text):
-            return data['left'][i], data['top'][i]
+    label_regex = r'^([א-ת]|[0-9])[.:\]]?$'  # Matches א 1. etc.
 
-        # handle cases where "א" and "." are separate words, like: ["א", "."]
-        if text in "אבגדהו" and i + 1 < len(data['text']):
-            next_text = data['text'][i + 1].strip()
-            if next_text == ".":
-                return data['left'][i], data['top'][i]
+    for i, text in enumerate(data['text']):
+        clean = text.strip()
+        if re.fullmatch(label_regex, clean):
+            x = data['left'][i]
+            y = data['top'][i]
+            w_box = data['width'][i]
+            h_box = data['height'][i]
+            return x + w_box, y + h_box // 2, w_box
 
-    # fallback if no label was found
-    return fallback_x, fallback_y
+    # Step 2: fallback via rightmost contour in top region
+    _, thresh = cv2.threshold(gray[:60, :], 190, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        # select contour closest to right edge
+        c = min(contours, key=lambda cnt: cv2.boundingRect(cnt)[0])  # RTL = small x = right
+        x, y, w_box, h_box = cv2.boundingRect(c)
+        return x + w_box, y + h_box // 2, w_box
+
+    # Step 3: fallback to top-right corner
+    fallback_x = w + 60
+    fallback_y = 25
+    fallback_w = 30
+    return fallback_x, fallback_y, fallback_w
 
 
 def split_question_and_answers(img_path):
@@ -302,43 +317,68 @@ def split_question_and_answers(img_path):
 
 
 def merge_question_and_answers(question_img, answer_imgs, out_path):
+    """
+    Merges a question image with its shuffled answer images.
+    Adds new Hebrew letter labels (e.g., 'א.', 'ב.', etc.) to each answer image:
+    - Label is placed just after the detected original label position
+    - Old label is erased before placing the new one
+    - Resulting image stacks all parts vertically into a single image
+    """
     from PIL import ImageFont, ImageDraw, Image as PILImage
 
     labels = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י']
     cleaned_answers = []
 
     for i, img in enumerate(answer_imgs):
-        img_pil = PILImage.fromarray(img.copy())
-        draw = ImageDraw.Draw(img_pil)
-
+        position = get_label_position(img)
+        label_text = f"{labels[i]}."
         try:
             font = ImageFont.truetype("arial.ttf", 28)
         except:
             font = ImageFont.load_default()
 
-        # גלה איפה הייתה התווית המקורית
-        x, y = get_label_position(img)
+        bbox = font.getbbox(label_text)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
 
-        # מחק את התווית הישנה (מלבן לבן קטן)
-        cv2.rectangle(img, (x - 5, y - 5), (x + 60, y + 30), (255, 255, 255), -1)
-        img_pil = PILImage.fromarray(img)
+        if position:
+            x, y, label_w = position
+            x_aligned = x + 5
+            y_aligned = max(0, y - text_h // 2)
+            # Clear background
+            x0 = max(0, x - 10)
+            pil_img = PILImage.fromarray(img.copy())
+            draw = ImageDraw.Draw(pil_img)
+            draw.rectangle(
+                [(x0, y_aligned - 2), (x_aligned + text_w + 4, y_aligned + text_h + 2)],
+                fill=(255, 255, 255)
+            )
+            draw.text((x_aligned, y_aligned), label_text, fill=(0, 0, 0), font=font)
+        else:
+            # Fallback to top-right corner (RTL)
+            h, w = img.shape[:2]
+            x_fallback = w - text_w - 20
+            y_fallback = 10
+            pil_img = PILImage.fromarray(img.copy())
+            draw = ImageDraw.Draw(pil_img)
+            draw.rectangle(
+                [(x_fallback - 4, y_fallback - 2), (x_fallback + text_w + 4, y_fallback + text_h + 2)],
+                fill=(255, 255, 255)
+            )
+            draw.text((x_fallback, y_fallback), label_text, fill=(0, 0, 0), font=font)
 
-        # כתוב את התווית החדשה באותו מקום
-        draw = ImageDraw.Draw(img_pil)
-        draw.text((x, y), f"{labels[i]}.", fill=(0, 0, 0), font=font)
+        cleaned_answers.append(np.array(pil_img))
 
-        cleaned_answers.append(np.array(img_pil))
-
-    # מיזוג לשאלה אחת
+    # Merge all parts vertically
     parts = [question_img] + cleaned_answers
     heights = [p.shape[0] for p in parts]
     max_w = max(p.shape[1] for p in parts)
     canvas = np.ones((sum(heights), max_w, 3), dtype=np.uint8) * 255
-    y = 0
+    y_offset = 0
     for p in parts:
         h, w = p.shape[:2]
-        canvas[y:y + h, :w] = p
-        y += h
+        canvas[y_offset:y_offset + h, :w] = p
+        y_offset += h
 
     cv2.imwrite(out_path, canvas)
 
@@ -396,7 +436,9 @@ if __name__ == '__main__':
     #     for p in split_paths:
     #         shuffle_answers_in_image(p, MIXED_DIR)
 
-    # process_page('input/Exam24BB-02.png', 'split_questions', 'mixed_questions')
-    # process_page('input/Exam24BB-03.png', 'split_questions', 'mixed_questions')
-    # process_page('input/Exam24BB-04.png', 'split_questions', 'mixed_questions')
+    # process_page('input/Exam24BB-02.png', SPLIT_DIR, MIXED_DIR)
+    # process_page('input/Exam24BB-03.png', SPLIT_DIR, MIXED_DIR)
     process_page('input/Exam24BB-04.png', SPLIT_DIR, MIXED_DIR)
+    # process_page('input/testing2.png', SPLIT_DIR, MIXED_DIR)
+    # process_page('input/testing3.png', SPLIT_DIR, MIXED_DIR)
+    # process_page('input/testing4.png', SPLIT_DIR, MIXED_DIR)
