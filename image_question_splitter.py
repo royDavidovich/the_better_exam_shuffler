@@ -13,6 +13,8 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 INPUT_DIR = 'input'
 SPLIT_DIR = 'split_questions'
 MIXED_DIR = 'mixed_questions'
+DEBUG_DIR = 'mixed_questions//debug_answers'
+DEBUG = False  # Toggle visual debug mode
 
 
 def clean_folder(path):
@@ -26,121 +28,6 @@ def clean_folder(path):
     else:
         os.makedirs(path)
 
-
-#
-# def detect_question_starts(image_path):
-#     """
-#     Returns (question_starts, fallback_end, is_fallback, image)
-#     """
-#     img = cv2.imread(image_path)
-#     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-#     data = pytesseract.image_to_data(
-#         rgb, lang='heb+eng', output_type=pytesseract.Output.DICT
-#     )
-#
-#     entries = []
-#     for i, txt in enumerate(data['text']):
-#         t = txt.strip()
-#         if not t:
-#             continue
-#         entries.append({
-#             'text': t,
-#             'y': data['top'][i],
-#             'line': data['line_num'][i],
-#             'block': data['block_num'][i]
-#         })
-#
-#     # merge same-line entries
-#     merged, cur, last = [], [], (-1, -1)
-#     for e in entries:
-#         key = (e['block'], e['line'])
-#         if key != last and cur:
-#             merged.append({
-#                 'text': " ".join(x['text'] for x in cur),
-#                 'y': min(x['y'] for x in cur)
-#             })
-#             cur = []
-#         cur.append(e)
-#         last = key
-#     if cur:
-#         merged.append({
-#             'text': " ".join(x['text'] for x in cur),
-#             'y': min(x['y'] for x in cur)
-#         })
-#
-#     # detect headers
-#     q_starts = [m['y'] for m in merged if re.search(r"מס[׳']?\s*\d+", m['text'])]
-#     if q_starts:
-#         print(f"✅ Detected {len(q_starts)} question(s) by header.")
-#         return sorted(q_starts), None, False, img
-#
-#     # fallback by answers
-#     answers = [m for m in merged if re.match(r"^[אבגדה]\.", m['text'])]
-#     if answers:
-#         ys = [a['y'] for a in answers]
-#         y_min, y_max = min(ys), max(ys)
-#         block_h = y_max - y_min
-#         y0 = max(0, int(y_min - 3*block_h))
-#         print("⚠️ Fallback mode: using answer block.")
-#         print(f"↳ Answer block height={block_h}px, estimating start y={y0}")
-#         return [y0], y_max, True, img
-#
-#     print("❌ No questions or answers detected.")
-#     return [], None, False, img
-#
-# def crop_horizontal(img, pad_left=10, pad_right=10):
-#     """
-#     Crop left/right to first/last non-white pixel + padding.
-#     """
-#     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-#     _, thresh = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-#     cols = np.any(thresh, axis=0)
-#     if not cols.any():
-#         return img
-#     x_coords = np.where(cols)[0]
-#     x0, x1 = x_coords[0], x_coords[-1] + 1
-#     h, w = img.shape[:2]
-#     x0 = max(0, x0 - pad_left)
-#     x1 = min(w, x1 + pad_right)
-#     return img[:, x0:x1]
-#
-# def split_questions(image_path, output_dir='output_questions'):
-#     os.makedirs(output_dir, exist_ok=True)
-#     base = os.path.splitext(os.path.basename(image_path))[0]
-#
-#     q_starts, fallback_end, is_fb, img = detect_question_starts(image_path)
-#     img_h, img_w = img.shape[:2]
-#     q_starts.sort()
-#
-#     if not q_starts:
-#         print("❌ No question blocks to split.")
-#         return
-#
-#     q_starts.append(img_h)
-#     top_pad = 15
-#     bottom_pad = 30
-#
-#     for i in range(len(q_starts)-1):
-#         y0 = q_starts[i]
-#         if not is_fb:
-#             y0 = max(0, y0 - top_pad)
-#         if is_fb and i == len(q_starts)-2 and fallback_end is not None:
-#             y1 = min(img_h, fallback_end + bottom_pad)
-#         else:
-#             y1 = q_starts[i+1]
-#
-#         block = img[y0:y1, :]
-#         block = crop_horizontal(block, pad_left=10, pad_right=20)
-#
-#         out_name = f"{base}_question_{i+1:02d}.png"
-#         out_path = os.path.join(output_dir, out_name)
-#         cv2.imwrite(out_path, block)
-#         print(f"✅ Saved {out_name} (y={y0}-{y1}, crop width={block.shape[1]}px)")
-#
-# if __name__ == '__main__':
-#     split_questions('input/testing3.png')
-
-# --- Content-based splitting -----------------------------------------------
 
 def find_content_blocks(
         img,
@@ -216,52 +103,6 @@ def split_by_content(img_path, out_dir='split_questions'):
 
 
 # --- OCR-based splitting & shuffling ---------------------------------------
-def get_label_position(img):
-    """
-    Detects the position of a label (e.g., 'א.', 'ב.', '1.') in an RTL answer image.
-    Returns (x, y, label_width) where:
-    - x is the x-coordinate of the label's right edge
-    - y is the vertical center
-    - label_width is used to calculate alignment
-    """
-    import pytesseract
-    import re
-    import cv2
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape[:2]
-
-    # Step 1: OCR on the top 60 pixels only
-    top_strip = gray[:60, :]
-    data = pytesseract.image_to_data(top_strip, lang='heb', config='--psm 6', output_type=pytesseract.Output.DICT)
-
-    label_regex = r'^([א-ת]|[0-9])[.:\]]?$'  # Matches א 1. etc.
-
-    for i, text in enumerate(data['text']):
-        clean = text.strip()
-        if re.fullmatch(label_regex, clean):
-            x = data['left'][i]
-            y = data['top'][i]
-            w_box = data['width'][i]
-            h_box = data['height'][i]
-            return x + w_box, y + h_box // 2, w_box
-
-    # Step 2: fallback via rightmost contour in top region
-    _, thresh = cv2.threshold(gray[:60, :], 190, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        # select contour closest to right edge
-        c = min(contours, key=lambda cnt: cv2.boundingRect(cnt)[0])  # RTL = small x = right
-        x, y, w_box, h_box = cv2.boundingRect(c)
-        return x + w_box, y + h_box // 2, w_box
-
-    # Step 3: fallback to top-right corner
-    fallback_x = w + 60
-    fallback_y = 25
-    fallback_w = 30
-    return fallback_x, fallback_y, fallback_w
-
-
 def split_question_and_answers(img_path):
     img = cv2.imread(img_path)
     h, w = img.shape[:2]
@@ -309,78 +150,12 @@ def split_question_and_answers(img_path):
 
     answer_imgs = []
     for idx, ans in enumerate(answers):
-        y0 = ans['y0']
+        pad_top = 10 if idx == 0 else 0  # padding רק לתשובה א
+        y0 = max(0, ans['y0'] - pad_top)
         y1 = answers[idx + 1]['y0'] if idx + 1 < len(answers) else h
         answer_imgs.append((ans['text'][0], img[y0:y1, :]))
 
     return question_img, answer_imgs
-
-
-def merge_question_and_answers(question_img, answer_imgs, out_path):
-    """
-    Merges a question image with its shuffled answer images.
-    Adds new Hebrew letter labels (e.g., 'א.', 'ב.', etc.) to each answer image:
-    - Label is placed just after the detected original label position
-    - Old label is erased before placing the new one
-    - Resulting image stacks all parts vertically into a single image
-    """
-    from PIL import ImageFont, ImageDraw, Image as PILImage
-
-    labels = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י']
-    cleaned_answers = []
-
-    for i, img in enumerate(answer_imgs):
-        position = get_label_position(img)
-        label_text = f"{labels[i]}."
-        try:
-            font = ImageFont.truetype("arial.ttf", 28)
-        except:
-            font = ImageFont.load_default()
-
-        bbox = font.getbbox(label_text)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-
-        if position:
-            x, y, label_w = position
-            x_aligned = x + 5
-            y_aligned = max(0, y - text_h // 2)
-            # Clear background
-            x0 = max(0, x - 10)
-            pil_img = PILImage.fromarray(img.copy())
-            draw = ImageDraw.Draw(pil_img)
-            draw.rectangle(
-                [(x0, y_aligned - 2), (x_aligned + text_w + 4, y_aligned + text_h + 2)],
-                fill=(255, 255, 255)
-            )
-            draw.text((x_aligned, y_aligned), label_text, fill=(0, 0, 0), font=font)
-        else:
-            # Fallback to top-right corner (RTL)
-            h, w = img.shape[:2]
-            x_fallback = w - text_w - 20
-            y_fallback = 10
-            pil_img = PILImage.fromarray(img.copy())
-            draw = ImageDraw.Draw(pil_img)
-            draw.rectangle(
-                [(x_fallback - 4, y_fallback - 2), (x_fallback + text_w + 4, y_fallback + text_h + 2)],
-                fill=(255, 255, 255)
-            )
-            draw.text((x_fallback, y_fallback), label_text, fill=(0, 0, 0), font=font)
-
-        cleaned_answers.append(np.array(pil_img))
-
-    # Merge all parts vertically
-    parts = [question_img] + cleaned_answers
-    heights = [p.shape[0] for p in parts]
-    max_w = max(p.shape[1] for p in parts)
-    canvas = np.ones((sum(heights), max_w, 3), dtype=np.uint8) * 255
-    y_offset = 0
-    for p in parts:
-        h, w = p.shape[:2]
-        canvas[y_offset:y_offset + h, :w] = p
-        y_offset += h
-
-    cv2.imwrite(out_path, canvas)
 
 
 def shuffle_answers_in_image(img_path, out_dir='mixed_questions'):
@@ -398,13 +173,228 @@ def shuffle_answers_in_image(img_path, out_dir='mixed_questions'):
     random.seed(seed)
     print(f"🔀 Shuffling answers with seed {seed}")
 
-    answer_imgs_only = [img for _, img in answers]  # התמונה בלבד
-    random.shuffle(answer_imgs_only)
+    # ערבב את הרשימה כולה
+    shuffled = answers.copy()
+    random.shuffle(shuffled)
 
-    # העבר לפונקציה את התמונות בלבד (ללא תווית ישנה)
+    answer_imgs_only = [img for _, img in shuffled]
+
     merge_question_and_answers(q_img, answer_imgs_only, out_path)
     print(f"✅ Saved shuffled question: {out_path}")
     return out_path
+
+
+def get_label_position(img):
+    """
+    Detects the position of a label (e.g., 'א.', 'ב.', '1.') in an RTL answer image.
+    Returns (x, y, label_width) where:
+    - x is the x-coordinate of the label's right edge
+    - y is the vertical center
+    - label_width is used to calculate alignment
+    """
+    import pytesseract
+    import re
+    import cv2
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape[:2]
+
+    # Step 1: OCR on the top 60 pixels only
+    top_strip = gray[:60, :]
+    data = pytesseract.image_to_data(top_strip, lang='heb', config='--psm 6', output_type=pytesseract.Output.DICT)
+
+    label_regex = r'^([א-ת]|[0-9])[.:\]]?$'  # Matches א 1. etc.
+
+    for i, text in enumerate(data['text']):
+        clean = text.strip()
+        if re.fullmatch(label_regex, clean):
+            x = data['left'][i]
+            y = data['top'][i]
+            w_box = data['width'][i]
+            h_box = data['height'][i]
+            return x + w_box, y + h_box // 2, w_box
+
+    # Step 2: fallback via rightmost contour in top region
+    _, thresh = cv2.threshold(gray[:60, :], 190, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        # select contour closest to right edge
+        c = min(contours, key=lambda cnt: cv2.boundingRect(cnt)[0])  # RTL = small x = right
+        x, y, w_box, h_box = cv2.boundingRect(c)
+        return x + w_box, y + h_box // 2, w_box
+
+    # Step 3: fallback to top-right corner
+    fallback_x = w + 60
+    fallback_y = 25
+    fallback_w = 30
+    return fallback_x, fallback_y, fallback_w
+
+
+def replace_label_by_first_pixel(img, new_label, font_scale=1.0, thickness=2, bin_thresh=400):
+    """
+    מוצא את הרכיב הוויזואלי הכי ימני שנראה כמו תווית תקנית (עברית), מוחק אותו ומצייר תווית חדשה.
+    """
+    from PIL import ImageFont, ImageDraw, Image as PILImage
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, bw_inv = cv2.threshold(gray, bin_thresh, 255, cv2.THRESH_BINARY_INV)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bw_inv)
+
+    h_img, w_img = gray.shape
+    candidates = []
+
+    for i in range(1, num_labels):
+        x, y, w, h, area = stats[i]
+        if w < 10 or h < 15:
+            continue  # רעש קטן מדי
+        if x > w_img * 0.6:
+            roi = bw_inv[y:y + h, x:x + w]
+            black = np.count_nonzero(roi)
+            density = black / (w * h)
+            candidates.append((x, y, w, h, density, i))
+
+    if not candidates:
+        if DEBUG:
+            print("[DEBUG] No valid label candidates found in right side of image.")
+        return img
+
+    # נבחר את הרכיב עם ה־x הכי גדול (הכי ימני), מבין המועמדים
+    best = max(candidates, key=lambda t: t[0])  # לפי x
+
+    x, y, w, h, density, idx = best
+
+    # מחיקה מורחבת סביב התווית
+    pad_x = int(w * 0.6)
+    pad_y = int(h * 0.4)
+    x0 = max(0, x - pad_x)
+    y0 = max(0, y - pad_y)
+    x1 = min(img.shape[1], x + w + pad_x)
+    y1 = min(img.shape[0], y + h + pad_y)
+
+    img_copy = img.copy()
+    img_copy[y0:y1, x0:x1] = 255  # מחיקה
+
+    pil = PILImage.fromarray(img_copy)
+    draw = ImageDraw.Draw(pil)
+
+    try:
+        font = ImageFont.truetype("arial.ttf", int(h * 1.8))
+    except:
+        font = ImageFont.load_default()
+
+    draw.text((x, y), new_label, fill=(0, 0, 0), font=font)
+
+    if DEBUG:
+        draw.rectangle([(x0, y0), (x1, y1)], outline=(255, 0, 0), width=2)
+        draw.text((5, 5), "DEBUG: old label erased", fill=(0, 0, 255))
+        print(f"[DEBUG] Picked label @ x={x}, y={y}, w={w}, h={h}, density={density:.2f}")
+
+    return np.array(pil)
+
+
+def merge_question_and_answers(question_img, answer_imgs, out_path):
+    from PIL import ImageFont, ImageDraw, Image as PILImage
+
+    labels = ['א', 'ב', 'ג', 'ד', 'ה', 'ו']
+    cleaned = []
+    label_x_positions = []
+
+    if DEBUG:
+        debug_dir = os.path.join(os.path.dirname(out_path), "debug_answers")
+        os.makedirs(debug_dir, exist_ok=True)
+
+    for i, img in enumerate(answer_imgs):
+        label = f"{labels[i]}."
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, bw_inv = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(bw_inv)
+
+        h_img, w_img = gray.shape
+        candidates = []
+
+        for j in range(1, num_labels):
+            x, y, w, h, area = stats[j]
+            if w < 10 or h < 15:
+                continue
+            if x > w_img * 0.6:
+                candidates.append((x, y, w, h))
+
+        if not candidates:
+            cleaned.append(img)
+            label_x_positions.append(None)
+            continue
+
+        # הרכיב הימני ביותר בצד ימין
+        x, y, w, h = max(candidates, key=lambda t: t[0])
+        label_x_positions.append(x)
+
+        # רקע מחוק באזור המקורי (להרחבה – בעתיד אפשר להסיר)
+        img_copy = img.copy()
+
+        pil = PILImage.fromarray(img_copy)
+        draw = ImageDraw.Draw(pil)
+
+        try:
+            font = ImageFont.truetype("arial.ttf", int(h * 1.8))
+        except:
+            font = ImageFont.load_default()
+
+        # קביעת X מנורמל
+        draw_x = x
+        if len([val for val in label_x_positions if val is not None]) >= 2:
+            median_x = int(np.median([val for val in label_x_positions if val is not None]))
+            if abs(x - median_x) > 10:
+                extra_shift = 9  # כמה פיקסלים להזיז מעבר ליישור
+                draw_x = median_x + extra_shift
+                if DEBUG:
+                    print(f"[DEBUG] Adjusted label '{label}' x from {x} → {draw_x} (with +{extra_shift}px extra shift)")
+
+        # חישוב מיקום למחיקת הרקע
+        bbox = font.getbbox(label)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        y_aligned = y
+
+        # מחיקה במיקום החדש
+        draw.rectangle(
+            [(draw_x - 4, y_aligned - 2),
+             (draw_x + text_w + 4, y_aligned + text_h + 2)],
+            fill=(255, 255, 255)
+        )
+
+        # ציור האות המנורמלת
+        draw.text((draw_x, y_aligned), label, fill=(0, 0, 0), font=font)
+
+        # DEBUG
+        if DEBUG:
+            draw.rectangle(
+                [(draw_x - 4, y_aligned - 2),
+                 (draw_x + text_w + 4, y_aligned + text_h + 2)],
+                outline=(255, 0, 0), width=2
+            )
+            draw.text((5, 5), "DEBUG: old label erased", fill=(0, 0, 255))
+
+            q_base = os.path.splitext(os.path.basename(out_path))[0].replace('_mixed', '')
+            debug_name = f"{q_base}_a{i}.png"
+            debug_path = os.path.join(debug_dir, debug_name)
+            cv2.imwrite(debug_path, np.array(pil))
+            print(f"🖼️ Saved debug: {debug_path}")
+
+        cleaned.append(np.array(pil))
+
+    # מיזוג אנכי
+    parts = [question_img] + cleaned
+    total_h = sum(p.shape[0] for p in parts)
+    max_w = max(p.shape[1] for p in parts)
+    canvas = np.ones((total_h, max_w, 3), dtype=np.uint8) * 255
+
+    y0 = 0
+    for part in parts:
+        h, w = part.shape[:2]
+        canvas[y0:y0 + h, :w] = part
+        y0 += h
+
+    cv2.imwrite(out_path, canvas)
 
 
 # --- Orchestration ---------------------------------------------------------
@@ -426,18 +416,10 @@ def process_page(img_path,
 if __name__ == '__main__':
     clean_folder(SPLIT_DIR)
     clean_folder(MIXED_DIR)
+    clean_folder(DEBUG_DIR)
 
-    # for fname in sorted(os.listdir(INPUT_DIR)):
-    #     if not fname.lower().endswith('.png'):
-    #         continue
-    #     page = os.path.join(INPUT_DIR, fname)
-    #     print(f"→ Processing {page}")
-    #     split_paths = split_by_content(page, SPLIT_DIR)
-    #     for p in split_paths:
-    #         shuffle_answers_in_image(p, MIXED_DIR)
-
-    # process_page('input/Exam24BB-02.png', SPLIT_DIR, MIXED_DIR)
-    # process_page('input/Exam24BB-03.png', SPLIT_DIR, MIXED_DIR)
+    process_page('input/Exam24BB-02.png', SPLIT_DIR, MIXED_DIR)
+    process_page('input/Exam24BB-03.png', SPLIT_DIR, MIXED_DIR)
     process_page('input/Exam24BB-04.png', SPLIT_DIR, MIXED_DIR)
     # process_page('input/testing2.png', SPLIT_DIR, MIXED_DIR)
     # process_page('input/testing3.png', SPLIT_DIR, MIXED_DIR)
