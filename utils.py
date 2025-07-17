@@ -3,32 +3,11 @@ import cv2
 import numpy as np
 from pdf2image import convert_from_path
 from PIL import Image
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
 
-
-def save_images_to_pdf(image_dir, output_pdf_path):
-    """
-    Convert all images in `image_dir` to a single PDF file.
-    Images are sorted by filename.
-    """
-    image_files = sorted([
-        f for f in os.listdir(image_dir)
-        if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-    ])
-
-    if not image_files:
-        print(f"❌ No images found in {image_dir}")
-        return
-
-    images = []
-    for fname in image_files:
-        img_path = os.path.join(image_dir, fname)
-        img = Image.open(img_path).convert('RGB')
-        images.append(img)
-
-    first, rest = images[0], images[1:]
-    os.makedirs(os.path.dirname(output_pdf_path), exist_ok=True)
-    first.save(output_pdf_path, save_all=True, append_images=rest)
-    print(f"📄 PDF created: {output_pdf_path}")
+DEBUG = False  # Toggle visual debug mode
 
 
 def clean_folder(path):
@@ -62,13 +41,13 @@ def convert_pdf_to_images(pdf_path, output_dir, dpi=300):
 
 def find_content_blocks(
         img,
-        thresh_val=240,
+        thresh_val=235,
         morph_kernel=(3, 75),
         open_kernel=(3, 3),
-        min_block_height=120,
+        min_block_height=150,
         min_gap=50,
-        pad_top=25,
-        pad_bottom=25,
+        pad_top=30,
+        pad_bottom=30,
         row_thresh_frac=0.05
 ):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -110,4 +89,61 @@ def find_content_blocks(
             y1 = min(img.shape[0], end + pad_bottom)
             blocks.append((y0, y1))
 
+    # DEBUG visualization
+    if 'DEBUG' in globals() and DEBUG:
+        dbg_img = img.copy()
+        for y0, y1 in blocks:
+            cv2.rectangle(dbg_img, (0, y0), (dbg_img.shape[1], y1), (0, 0, 255), 2)
+        os.makedirs("debug_blocks", exist_ok=True)
+        dbg_path = os.path.join("debug_blocks", f"block{y}_preview.png")
+        cv2.imwrite(dbg_path, dbg_img)
+        print(f"[DEBUG] Saved block preview: {dbg_path}")
+        print(f"[DEBUG] Detected {len(blocks)} content blocks at:")
+        for idx, (y0, y1) in enumerate(blocks):
+            print(f"  Block {idx+1}: y0={y0}, y1={y1}, height={y1 - y0}")
+
     return blocks
+
+
+def save_images_to_pdf_grid_high_quality(image_dir, output_pdf_path, margin_cm=1.5, spacing_px=20, assumed_dpi=300):
+    image_files = sorted([
+        f for f in os.listdir(image_dir)
+        if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+    ])
+    if not image_files:
+        print(f"❌ No images found in {image_dir}")
+        return
+
+    c = canvas.Canvas(output_pdf_path, pagesize=A4)
+    page_width, page_height = A4
+    margin = margin_cm * cm
+    y_cursor = page_height - margin  # start from top
+    max_width = page_width - 2 * margin
+    min_margin_y = margin
+
+    for fname in image_files:
+        img_path = os.path.join(image_dir, fname)
+        img = Image.open(img_path)
+        img_width_px, img_height_px = img.size
+
+        # Convert pixel size to points using assumed DPI
+        img_width_pt = img_width_px * 72 / assumed_dpi
+        img_height_pt = img_height_px * 72 / assumed_dpi
+
+        # Scale image down if it's wider than allowed page width
+        if img_width_pt > max_width:
+            scale = max_width / img_width_pt
+            img_width_pt *= scale
+            img_height_pt *= scale
+
+        # If not enough space on page for this image, move to new page
+        if y_cursor - img_height_pt < min_margin_y:
+            c.showPage()
+            y_cursor = page_height - margin
+
+        c.drawInlineImage(img_path, margin, y_cursor - img_height_pt, width=img_width_pt, height=img_height_pt)
+        y_cursor -= img_height_pt + spacing_px
+
+    c.save()
+    print(f"📄 PDF generated (high quality): {output_pdf_path}")
+

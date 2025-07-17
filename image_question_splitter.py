@@ -17,22 +17,33 @@ DEBUG = False  # Toggle visual debug mode
 
 
 def split_by_content(img_path, out_dir='split_questions'):
-    """
-    Split a page image into question-block PNGs.
-    Returns list of output paths.
-    """
-    clean_folder(out_dir)
+    # clean_folder(out_dir)
     img = cv2.imread(img_path)
     base = os.path.splitext(os.path.basename(img_path))[0]
-    blocks = find_content_blocks(img)
+    blocks = find_content_blocks(
+        img,
+        row_thresh_frac=0.05,
+        min_gap=80,
+        min_block_height=300
+    )
 
     out_paths = []
+
+    if not blocks:
+        # No blocks detected – save the entire image as one block
+        fname = f"{base}_q00.png"
+        out_path = os.path.join(out_dir, fname)
+        cv2.imwrite(out_path, img)
+        out_paths.append(out_path)
+        return out_paths
+
     for i, (y0, y1) in enumerate(blocks, 1):
         crop = img[y0:y1, :]
-        fname = f"{base}_q{i:02d}.png"
+        fname = f"{os.path.splitext(os.path.basename(img_path))[0]}_q{i:02d}.png"
         out_path = os.path.join(out_dir, fname)
         cv2.imwrite(out_path, crop)
         out_paths.append(out_path)
+
     return out_paths
 
 
@@ -141,6 +152,8 @@ def merge_question_and_answers(question_img, answer_imgs, out_path):
         os.makedirs(debug_dir, exist_ok=True)
 
     for i, img in enumerate(answer_imgs):
+        if i >= len(labels):
+            break
         label = f"{labels[i]}."
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, bw_inv = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
@@ -157,17 +170,45 @@ def merge_question_and_answers(question_img, answer_imgs, out_path):
                 candidates.append((x, y, w, h))
 
         if not candidates:
-            cleaned.append(img)
-            label_x_positions.append(None)
+            if DEBUG:
+                print(f"[DEBUG] No label candidate found for answer {label}. Forcing draw anyway.")
+
+            img_copy = img.copy()
+            pil = PILImage.fromarray(img_copy)
+            draw = ImageDraw.Draw(pil)
+
+            try:
+                font = ImageFont.truetype("arial.ttf", int(img.shape[0] * 0.08))
+            except:
+                font = ImageFont.load_default()
+
+            draw_x = 40
+            draw_y = 40
+
+            draw.text((draw_x, draw_y), label, fill=(0, 0, 0), font=font)
+
+            if DEBUG:
+                draw.rectangle(
+                    [(draw_x - 4, draw_y - 2),
+                     (draw_x + 60, draw_y + 25)],
+                    outline=(255, 0, 0), width=2
+                )
+                draw.text((5, 5), "DEBUG: forced label", fill=(0, 0, 255))
+
+                q_base = os.path.splitext(os.path.basename(out_path))[0].replace('_mixed', '')
+                debug_name = f"{q_base}_a{i}_forced.png"
+                debug_path = os.path.join(debug_dir, debug_name)
+                cv2.imwrite(debug_path, np.array(pil))
+                print(f"🖼️ Saved forced-label debug: {debug_path}")
+
+            cleaned.append(np.array(pil))
+            label_x_positions.append(draw_x)
             continue
 
-        # הרכיב הימני ביותר בצד ימין
         x, y, w, h = max(candidates, key=lambda t: t[0])
         label_x_positions.append(x)
 
-        # רקע מחוק באזור המקורי (להרחבה – בעתיד אפשר להסיר)
         img_copy = img.copy()
-
         pil = PILImage.fromarray(img_copy)
         draw = ImageDraw.Draw(pil)
 
@@ -176,33 +217,26 @@ def merge_question_and_answers(question_img, answer_imgs, out_path):
         except:
             font = ImageFont.load_default()
 
-        # קביעת X מנורמל
         draw_x = x
         if len([val for val in label_x_positions if val is not None]) >= 2:
             median_x = int(np.median([val for val in label_x_positions if val is not None]))
             if abs(x - median_x) > 10:
-                extra_shift = 9  # כמה פיקסלים להזיז מעבר ליישור
-                draw_x = median_x + extra_shift
+                draw_x = median_x + 9
                 if DEBUG:
-                    print(f"[DEBUG] Adjusted label '{label}' x from {x} → {draw_x} (with +{extra_shift}px extra shift)")
+                    print(f"[DEBUG] Adjusted label '{label}' x from {x} → {draw_x}")
 
-        # חישוב מיקום למחיקת הרקע
         bbox = font.getbbox(label)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
         y_aligned = y
 
-        # מחיקה במיקום החדש
         draw.rectangle(
             [(draw_x - 4, y_aligned - 2),
              (draw_x + text_w + 4, y_aligned + text_h + 2)],
             fill=(255, 255, 255)
         )
-
-        # ציור האות המנורמלת
         draw.text((draw_x, y_aligned), label, fill=(0, 0, 0), font=font)
 
-        # DEBUG
         if DEBUG:
             draw.rectangle(
                 [(draw_x - 4, y_aligned - 2),
@@ -219,10 +253,17 @@ def merge_question_and_answers(question_img, answer_imgs, out_path):
 
         cleaned.append(np.array(pil))
 
-    # מיזוג אנכי
+    # unify widths before stacking
     parts = [question_img] + cleaned
-    total_h = sum(p.shape[0] for p in parts)
     max_w = max(p.shape[1] for p in parts)
+
+    for i in range(len(parts)):
+        h, w = parts[i].shape[:2]
+        if w < max_w:
+            pad = np.ones((h, max_w - w, 3), dtype=np.uint8) * 255
+            parts[i] = np.hstack([parts[i], pad])
+
+    total_h = sum(p.shape[0] for p in parts)
     canvas = np.ones((total_h, max_w, 3), dtype=np.uint8) * 255
 
     y0 = 0
@@ -237,16 +278,16 @@ def merge_question_and_answers(question_img, answer_imgs, out_path):
 # --- Orchestration ---------------------------------------------------------
 
 def process_page(img_path,
-                 split_dir='split_questions',
-                 mixed_dir='mixed_questions'):
-    # 1) split page into question images
+                 split_dir=SPLIT_DIR,
+                 mixed_dir=MIXED_DIR):
+    # if not DEBUG:
+    #     clean_folder(split_dir)
     split_paths = split_by_content(img_path, split_dir)
-    # 2) shuffle each split image
-    # clean_folder(mixed_dir)
     results = []
     for p in split_paths:
         out = shuffle_answers_in_image(p, mixed_dir)
-        results.append(out)
+        if out:  # Only include successfully shuffled ones
+            results.append(out)
     return results
 
 
@@ -255,9 +296,10 @@ if __name__ == '__main__':
     clean_folder(MIXED_DIR)
     clean_folder(DEBUG_DIR)
 
+    process_page('input/Exam24BB-02.png', SPLIT_DIR, MIXED_DIR)
+    process_page('input/Exam24BB-03.png', SPLIT_DIR, MIXED_DIR)
+    process_page('input/Exam24BB-04.png', SPLIT_DIR, MIXED_DIR)
     process_page('input/Exam24BB-05.png', SPLIT_DIR, MIXED_DIR)
-    # process_page('input/Exam24BB-03.png', SPLIT_DIR, MIXED_DIR)
-    # process_page('input/Exam24BB-04.png', SPLIT_DIR, MIXED_DIR)
     # process_page('input/testing2.png', SPLIT_DIR, MIXED_DIR)
     # process_page('input/testing3.png', SPLIT_DIR, MIXED_DIR)
     # process_page('input/testing4.png', SPLIT_DIR, MIXED_DIR)

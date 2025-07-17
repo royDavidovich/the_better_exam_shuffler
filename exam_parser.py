@@ -58,18 +58,32 @@ def split_question_and_answers(img_path):
         y1 = max(x['y'] + x['h'] for x in cur)
         merged.append({'text': " ".join(x['text'] for x in cur), 'y0': y0, 'y1': y1})
 
-    answers = [m for m in merged if re.match(r"^[אבגדהוז]\.", m['text'])]
+    answers = [m for m in merged if re.match(r"^\s*[אבגדהוז][\.:)]", m['text'])]
+
     if not answers:
         return None, None
 
     answers.sort(key=lambda m: m['y0'])
+
+    # תיקון לשאלות שנחתכות מלמטה — וודא ש־y1 של התשובה האחרונה לא יוצא מהתמונה
+    safe_h = img.shape[0]
+
     question_img = img[0:answers[0]['y0'], :]
 
     answer_imgs = []
     for idx, ans in enumerate(answers):
-        pad_top = 10 if idx == 0 else 0  # padding רק לתשובה א
+        pad_top = 10 if idx == 0 else 0
         y0 = max(0, ans['y0'] - pad_top)
-        y1 = answers[idx + 1]['y0'] if idx + 1 < len(answers) else h
+        if idx + 1 < len(answers):
+            y1 = answers[idx + 1]['y0']
+        else:
+            y1 = safe_h  # ודא שהתשובה האחרונה נגמרת בגבול התמונה
+        if y1 > safe_h:
+            print(f"[WARNING] Adjusted answer y1 from {y1} to {safe_h} to avoid overflow")
+            y1 = safe_h
+        if y0 >= y1:
+            print(f"[WARNING] Invalid crop range: y0={y0}, y1={y1}. Skipping.")
+            continue
         answer_imgs.append((ans['text'][0], img[y0:y1, :]))
 
     return question_img, answer_imgs
