@@ -47,6 +47,8 @@ def shuffle_answers_in_image(img_path, out_dir='mixed_questions'):
 
     if answers is None:
         print(f"⚠️ No answers detected; {out_path}")
+        original = cv2.imread(img_path)
+        cv2.imwrite(out_path, original)
         return out_path
 
     # ערבוב עם seed
@@ -253,9 +255,9 @@ if __name__ == '__main__':
     clean_folder(MIXED_DIR)
     clean_folder(DEBUG_DIR)
 
-    process_page('input/Exam24BB-02.png', SPLIT_DIR, MIXED_DIR)
-    process_page('input/Exam24BB-03.png', SPLIT_DIR, MIXED_DIR)
-    process_page('input/Exam24BB-04.png', SPLIT_DIR, MIXED_DIR)
+    process_page('input/Exam24BB-05.png', SPLIT_DIR, MIXED_DIR)
+    # process_page('input/Exam24BB-03.png', SPLIT_DIR, MIXED_DIR)
+    # process_page('input/Exam24BB-04.png', SPLIT_DIR, MIXED_DIR)
     # process_page('input/testing2.png', SPLIT_DIR, MIXED_DIR)
     # process_page('input/testing3.png', SPLIT_DIR, MIXED_DIR)
     # process_page('input/testing4.png', SPLIT_DIR, MIXED_DIR)

@@ -1,10 +1,34 @@
 import os
-import random
 import cv2
 import numpy as np
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib.units import cm
+from pdf2image import convert_from_path
+from PIL import Image
+
+
+def save_images_to_pdf(image_dir, output_pdf_path):
+    """
+    Convert all images in `image_dir` to a single PDF file.
+    Images are sorted by filename.
+    """
+    image_files = sorted([
+        f for f in os.listdir(image_dir)
+        if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+    ])
+
+    if not image_files:
+        print(f"❌ No images found in {image_dir}")
+        return
+
+    images = []
+    for fname in image_files:
+        img_path = os.path.join(image_dir, fname)
+        img = Image.open(img_path).convert('RGB')
+        images.append(img)
+
+    first, rest = images[0], images[1:]
+    os.makedirs(os.path.dirname(output_pdf_path), exist_ok=True)
+    first.save(output_pdf_path, save_all=True, append_images=rest)
+    print(f"📄 PDF created: {output_pdf_path}")
 
 
 def clean_folder(path):
@@ -19,51 +43,21 @@ def clean_folder(path):
         os.makedirs(path)
 
 
-def shuffle_array(arr):
-    copy = arr[:]
-    random.shuffle(copy)
-    return copy
+def convert_pdf_to_images(pdf_path, output_dir, dpi=300):
+    poppler_dir = r".\poppler\Library\bin"
 
+    os.makedirs(output_dir, exist_ok=True)
+    images = convert_from_path(pdf_path, dpi=dpi, poppler_path=poppler_dir)
 
-def shuffle_exam(questions):
-    return [
-        {
-            'question': q['question'],
-            'options': shuffle_array(q['options'])
-        }
-        for q in questions
-    ]
+    saved_paths = []
+    base = os.path.splitext(os.path.basename(pdf_path))[0]
+    for i, img in enumerate(images):
+        fname = f"{base}_page{i+1:02d}.png"
+        out_path = os.path.join(output_dir, fname)
+        img.save(out_path)
+        saved_paths.append(out_path)
 
-
-def save_exam_to_pdf(questions, path):
-    c = canvas.Canvas(path, pagesize=A4)
-    width, height = A4
-    margin = 2 * cm
-    x = margin
-    y = height - margin
-    line_height = 16
-
-    c.setFont("Helvetica", 12)
-
-    for i, q in enumerate(questions, 1):
-        question_line = f"{i}. {q['question']}"
-        c.drawString(x, y, question_line)
-        y -= line_height
-
-        for j, opt in enumerate(q['options'], 1):
-            option_line = f"{opt}"
-            c.drawString(x + 20, y, option_line)
-            y -= line_height
-
-        y -= line_height // 2  # רווח נוסף בין שאלות
-
-        # דף חדש אם הגענו לתחתית
-        if y < margin:
-            c.showPage()
-            c.setFont("Helvetica", 12)
-            y = height - margin
-
-    c.save()
+    return saved_paths
 
 
 def find_content_blocks(
