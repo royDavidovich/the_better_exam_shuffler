@@ -1,13 +1,12 @@
 import random
-import shutil
 import time
-
 import cv2
 import pytesseract
-import re
 import numpy as np
 import os
-from PIL import Image
+
+from exam_parser import split_question_and_answers
+from utils import clean_folder, find_content_blocks
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 INPUT_DIR = 'input'
@@ -15,71 +14,6 @@ SPLIT_DIR = 'split_questions'
 MIXED_DIR = 'mixed_questions'
 DEBUG_DIR = 'mixed_questions//debug_answers'
 DEBUG = False  # Toggle visual debug mode
-
-
-def clean_folder(path):
-    """Delete all files in `path`. Creates it if it doesn't exist."""
-    if os.path.isdir(path):
-        # remove everything inside
-        for filename in os.listdir(path):
-            file_path = os.path.join(path, filename)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-    else:
-        os.makedirs(path)
-
-
-def find_content_blocks(
-        img,
-        thresh_val=240,
-        morph_kernel=(3, 75),
-        open_kernel=(3, 3),
-        min_block_height=120,
-        min_gap=50,
-        pad_top=25,
-        pad_bottom=25,
-        row_thresh_frac=0.05
-):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, bw = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY_INV)
-    k_close = cv2.getStructuringElement(cv2.MORPH_RECT, morph_kernel)
-    closed = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, k_close)
-    k_open = cv2.getStructuringElement(cv2.MORPH_RECT, open_kernel)
-    clean = cv2.morphologyEx(closed, cv2.MORPH_OPEN, k_open)
-    row_sum = np.sum(clean > 0, axis=1)
-    row_thresh = int(row_sum.max() * row_thresh_frac)
-
-    blocks = []
-    in_block = False
-    start = gap = 0
-
-    for y, cnt in enumerate(row_sum):
-        if cnt > row_thresh:
-            if not in_block:
-                in_block, start = True, y
-            gap = 0
-        else:
-            if in_block:
-                gap += 1
-                if gap >= min_gap:
-                    end = y - gap + 1
-                    h = end - start
-                    if h >= min_block_height:
-                        y0 = max(0, start - pad_top)
-                        y1 = min(img.shape[0], end + pad_bottom)
-                        blocks.append((y0, y1))
-                    in_block = False
-                    gap = 0
-
-    if in_block:
-        end = len(row_sum)
-        h = end - start
-        if h >= min_block_height:
-            y0 = max(0, start - pad_top)
-            y1 = min(img.shape[0], end + pad_bottom)
-            blocks.append((y0, y1))
-
-    return blocks
 
 
 def split_by_content(img_path, out_dir='split_questions'):
@@ -103,59 +37,6 @@ def split_by_content(img_path, out_dir='split_questions'):
 
 
 # --- OCR-based splitting & shuffling ---------------------------------------
-def split_question_and_answers(img_path):
-    img = cv2.imread(img_path)
-    h, w = img.shape[:2]
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    data = pytesseract.image_to_data(
-        rgb, lang='heb+eng', output_type=pytesseract.Output.DICT
-    )
-
-    entries = []
-    for i, txt in enumerate(data['text']):
-        txt = txt.strip()
-        if not txt:
-            continue
-        entries.append({
-            'text': txt,
-            'y': data['top'][i],
-            'h': data['height'][i],
-            'line': data['line_num'][i],
-            'block': data['block_num'][i]
-        })
-
-    # merge into lines
-    merged = []
-    cur, last_key = [], (-1, -1)
-    for e in entries:
-        key = (e['block'], e['line'])
-        if key != last_key and cur:
-            y0 = min(x['y'] for x in cur)
-            y1 = max(x['y'] + x['h'] for x in cur)
-            merged.append({'text': " ".join(x['text'] for x in cur), 'y0': y0, 'y1': y1})
-            cur = []
-        cur.append(e)
-        last_key = key
-    if cur:
-        y0 = min(x['y'] for x in cur)
-        y1 = max(x['y'] + x['h'] for x in cur)
-        merged.append({'text': " ".join(x['text'] for x in cur), 'y0': y0, 'y1': y1})
-
-    answers = [m for m in merged if re.match(r"^[אבגדהוז]\.", m['text'])]
-    if not answers:
-        return None, None
-
-    answers.sort(key=lambda m: m['y0'])
-    question_img = img[0:answers[0]['y0'], :]
-
-    answer_imgs = []
-    for idx, ans in enumerate(answers):
-        pad_top = 10 if idx == 0 else 0  # padding רק לתשובה א
-        y0 = max(0, ans['y0'] - pad_top)
-        y1 = answers[idx + 1]['y0'] if idx + 1 < len(answers) else h
-        answer_imgs.append((ans['text'][0], img[y0:y1, :]))
-
-    return question_img, answer_imgs
 
 
 def shuffle_answers_in_image(img_path, out_dir='mixed_questions'):
@@ -182,52 +63,6 @@ def shuffle_answers_in_image(img_path, out_dir='mixed_questions'):
     merge_question_and_answers(q_img, answer_imgs_only, out_path)
     print(f"✅ Saved shuffled question: {out_path}")
     return out_path
-
-
-def get_label_position(img):
-    """
-    Detects the position of a label (e.g., 'א.', 'ב.', '1.') in an RTL answer image.
-    Returns (x, y, label_width) where:
-    - x is the x-coordinate of the label's right edge
-    - y is the vertical center
-    - label_width is used to calculate alignment
-    """
-    import pytesseract
-    import re
-    import cv2
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape[:2]
-
-    # Step 1: OCR on the top 60 pixels only
-    top_strip = gray[:60, :]
-    data = pytesseract.image_to_data(top_strip, lang='heb', config='--psm 6', output_type=pytesseract.Output.DICT)
-
-    label_regex = r'^([א-ת]|[0-9])[.:\]]?$'  # Matches א 1. etc.
-
-    for i, text in enumerate(data['text']):
-        clean = text.strip()
-        if re.fullmatch(label_regex, clean):
-            x = data['left'][i]
-            y = data['top'][i]
-            w_box = data['width'][i]
-            h_box = data['height'][i]
-            return x + w_box, y + h_box // 2, w_box
-
-    # Step 2: fallback via rightmost contour in top region
-    _, thresh = cv2.threshold(gray[:60, :], 190, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        # select contour closest to right edge
-        c = min(contours, key=lambda cnt: cv2.boundingRect(cnt)[0])  # RTL = small x = right
-        x, y, w_box, h_box = cv2.boundingRect(c)
-        return x + w_box, y + h_box // 2, w_box
-
-    # Step 3: fallback to top-right corner
-    fallback_x = w + 60
-    fallback_y = 25
-    fallback_w = 30
-    return fallback_x, fallback_y, fallback_w
 
 
 def replace_label_by_first_pixel(img, new_label, font_scale=1.0, thickness=2, bin_thresh=400):
