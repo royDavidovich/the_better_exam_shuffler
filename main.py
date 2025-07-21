@@ -9,9 +9,11 @@ TEMP_DIR = 'input_pdf_images'
 SPLIT_DIR = 'split_questions'
 MIXED_DIR = 'mixed_questions'
 DEBUG_DIR = 'mixed_questions//debug_answers'
+DEBUG = False  # Toggle folder history debug mode
 
 
 def main():
+    os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     pdf_files = [f for f in os.listdir(INPUT_DIR) if f.lower().endswith('.pdf')]
@@ -43,6 +45,11 @@ def main():
 
     print(f"✅ Done! PDF saved to: {output_pdf_path}")
 
+    if not DEBUG:
+        clean_folder(TEMP_DIR)
+        clean_folder(SPLIT_DIR)
+        clean_folder(MIXED_DIR)
+        clean_folder(DEBUG_DIR)
 
 if __name__ == '__main__':
     main()
