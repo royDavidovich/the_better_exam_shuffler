@@ -1,14 +1,18 @@
 # The Better Exam Shuffler 📄🎲  
-*A smarter way to shuffle image-based CS exam questions.*
+*A smarter way to shuffle image-based CS (and other) exam questions.*
 
 ---
 
 ## 📝 Summary
 
 This project was born out of frustration.  
-Existing exam questions shufflers only handle plain text, while CS exams are full of **formulas**, **symbols**, and **images**.
+Existing exam question shufflers only handle plain text, while CS exams are full of **formulas**, **symbols**, and **images**.
 
 So... I built a better one.
+
+For your convenience, the basic instructions and the executable file are available in this Google Drive folder:
+<br>
+**[📂 Open Google Drive Folder](https://drive.google.com/drive/folders/1S6OQmM8ZThapQ3Ak6RI9eDY1Wdw9A1uq?usp=sharing)**
 
 ---
 
@@ -17,7 +21,7 @@ So... I built a better one.
 - Loads scanned exams (PDF)
 - Splits each page into question blocks
 - Separates the **question** from its **visual answers**
-- Detects Hebrew answer labels (א', ב', ג', ...) using layout-based logic (not just OCR)
+- Detects Hebrew answer labels (א', ב', ג, ...) using layout-based logic (not just OCR)
 - Randomly shuffles the answers
 - Redraws the correct labels in consistent positions
 - Saves the shuffled result as a clean, printable PDF
